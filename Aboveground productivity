@@ -1,0 +1,542 @@
+Biomass = read_excel("D:/PhD_Project/Data/ANPP_Gr_D.xlsx") %>%
+  mutate(Shelter = as.factor(Shelter))
+Biomass = Biomass %>% 
+  mutate(Year = substr(Date, 1, 4),
+         Season_year = paste0(Season, " ", Year),
+         Season_year = if_else(Year_round == 2 & Season_year == "Summer 2024",
+                               "Summer 2025",
+                               Season_year))
+df = Biomass %>% 
+  filter(Group %in% c("Grass","Legume", "Herb")) %>%
+  group_by(Group, Shelter, Clipping, Precipitation, Treatment, Season, Year) %>%
+  summarise("ANPP (t ha-1)" = sum(DM_sqm)*0.01, .groups = "drop")
+write.xlsx(df, "D:/PhD_Project/Data/Grazing x Drought data/Productivity.xlsx",
+           rowName = F)
+  
+Productivity = Biomass %>% 
+  filter(Group %in% c("Grass","Legume", "Herb")) %>%
+  group_by(Group, Shelter, Clipping, Precipitation, 
+           Treatment, Season_year, Season) %>% 
+  summarise(ANPP = sum(DM_sqm, na.rm = T)*0.01, .groups = "drop")
+
+ANPP_year_df = Productivity %>%
+  group_by(Shelter,Clipping, Precipitation, Treatment) %>%
+  summarise(ANPP = sum(ANPP, na.rm = T), .groups = "drop")
+
+
+ANPP_year_summary = summarySE(ANPP_year_df, measurevar = "ANPP",
+                              groupvars = "Treatment")
+ANPP_year_summary$Treatment = factor(ANPP_year_summary$Treatment, 
+                                     levels = c("L-W", "H-W", "L-D", "H-D"))
+summary_anpp_all = ANPP_year_summary %>%
+  select(Treatment, ANPP) %>%
+  pivot_wider(names_from = Treatment, values_from = ANPP) %>%
+  mutate(
+    drought_L   = ( `L-D` - `L-W` ) / `L-W` * 100,
+    drought_H   = ( `H-D` - `H-W` ) / `H-W` * 100,
+    clipping_W  = ( `H-W` - `L-W` ) / `L-W` * 100,
+    clipping_D  = ( `H-D` - `L-D` ) / `L-D` * 100,
+    Drought_effect = ((`L-D`+`H-D`)/2-(`L-W`+`H-W`)/2)/((`L-W`+`H-W`)/2)*100,
+    Clipping_effect = ((`H-W`+`H-D`)/2-(`L-W`+`L-D`)/2)/((`L-W`+`L-D`)/2)*100,
+    Expected_HD = clipping_W + drought_L,
+    Observed_HD = ( `H-D` - `L-W` ) / `L-W` * 100,
+    Direction =Observed_HD - Expected_HD)
+print(summary_anpp_all)
+
+df_summary_ANPP = ANPP_year_summary %>%
+  mutate(ANPP_SE = paste0(round(ANPP, 2), " ± ", round(se, 2)))
+df_wide_anpp = df_summary_ANPP %>%
+  dplyr::select(Treatment, ANPP_SE) %>%
+  pivot_wider(names_from = Treatment, values_from = ANPP_SE)
+
+df_wide_anpp = df_wide_anpp %>%
+  dplyr::select(`L-W`, `H-W`, `L-D`, `H-D`)
+
+ANPP_plot = ggplot(ANPP_year_summary, aes(x = Treatment, y = ANPP, 
+                                     color = Treatment, fill = Treatment)) +
+  geom_point(size = 9, position = position_dodge(width = 0.9)) +
+  geom_errorbar(aes(ymax = ANPP + se, ymin = ANPP - se),
+                position = position_dodge(width = 0.9),
+                linewidth = 1.4, width = 0.1) +
+  theme_classic() +
+  scale_color_manual(values = treatment_colors) +
+  scale_fill_manual(values = treatment_colors) +
+  theme(panel.border = element_rect(colour = "black", fill = NA, 
+                                    linewidth = 0.7),
+        legend.title = element_blank(), legend.text = element_text(size = 16),
+        legend.position = "none",
+        axis.title.y = element_text(size = 22), 
+        axis.title.x = element_blank(),
+        axis.text.x = element_text(size = 21),
+        axis.text.y = element_text(size = 21)) +
+  labs(y = expression(Total~ANPP~(t~ha^-1)))
+
+print(ANPP_plot)
+ggsave(filename = "Manuscript/Figures/ANPP_year.tiff", plot = ANPP_plot, 
+       dpi = 150, width = 800,height = 750, units = "px")
+pander(df_wide_anpp)
+pander(summary_anpp_all)
+
+
+## LME for ANPP
+
+set.seed(123)
+
+ANPP_year_df1 = Productivity %>%
+  group_by(Shelter,Clipping, Precipitation, Treatment) %>%
+  summarise(ANPP = sum(ANPP, na.rm = T), .groups = "drop")
+
+model = lmer(ANPP ~ Precipitation*Clipping + (1|Shelter), data = ANPP_year_df1)
+
+residuals = simulateResiduals(model)
+plot(residuals)
+
+anova = Anova(model, test = "F")
+print(anova)
+
+emm = emmeans(model, ~ Clipping | Precipitation)
+pairwise_comp = as.data.frame(pairs(emm))
+pander(pairwise_comp, caption = 'Contrasting treatment effects on 21-months ANPP')
+
+# Treatments comparison
+model_trt = lmer(ANPP ~ Treatment + (1 | Shelter), data = ANPP_year_df1)
+emm_trt = emmeans(model_trt, ~ Treatment)
+
+cld_trt = cld( emm_trt, alpha = 0.05, Letters = letters, adjust = "sidak")
+
+cld_trt_df = as.data.frame(cld_trt)
+cld_trt_df$.group = gsub(" ", "", cld_trt_df$.group)
+
+pander(cld_trt_df, caption = "CLD letters for Treatment effects on 21-month ANPP")
+
+# Pairwise contrasts
+pairwise_comp =as.data.frame(pairs(emm_trt, adjust = "sidak"))
+pander(pairwise_comp, caption = "Pairwise contrasts among Treatments on 21-month")
+
+#------------------------------------------------------------------------------
+            # Include seasons in the interaction
+#------------------------------------------------------------------------------
+
+ANPP_season_df = Productivity %>%
+  group_by(Season, Shelter, Group, Precipitation, Clipping, Treatment) %>%
+  summarise(ANPP = mean(ANPP, na.rm = T), .groups = "drop")
+ANPP_season_tot = ANPP_season_df %>%
+  group_by(Season, Shelter, Precipitation, Clipping, Treatment) %>%
+  summarise(ANPP = sum(ANPP, na.rm = T), .groups = "drop")
+
+model_overall1 = lmer(ANPP ~ Season*Precipitation*Clipping + (1|Shelter),
+                     data = ANPP_season_tot)
+plot(simulateResiduals(model_overall1))
+
+bc = boxcox(lm(ANPP ~ Season*Precipitation*Clipping,
+                     data = ANPP_season_tot), plotit = FALSE)
+lambda = bc$x[which.max(bc$y)]
+model_overall = lmer(ANPP^lambda ~ Season*Precipitation*Clipping + (1|Shelter),
+                     data = ANPP_season_tot)
+
+plot(simulateResiduals(model_overall))
+aov = Anova(model_overall, test = "F")
+print(aov)
+
+# Functional groups responses
+grp_season_df = list()
+post_hoc_list = list()
+
+for(grp in unique(ANPP_season_df$Group)){
+  data = subset(ANPP_season_df, Group == grp)
+  model1 = lmer(ANPP ~ Season*Precipitation*Clipping + (1|Shelter),
+                     data = data)
+  plot(simulateResiduals(model1))
+  
+  bc = boxcox(lm(ANPP ~ Season*Precipitation*Clipping,
+                     data = data), plotit = FALSE)
+  lambda = bc$x[which.max(bc$y)]
+  
+  model = lmer(ANPP^lambda ~ Season*Precipitation*Clipping + (1|Shelter),
+                     data = data)
+  model_res = simulateResiduals(model)
+  plot(model_res)
+  
+  aov = Anova(model, test = "F")
+  grp_season_df[[grp]] = aov
+  
+  emm = emmeans(model, ~ Clipping | Precipitation | Season)
+  pairwise = pairs(emm)
+  post_hoc_list[[grp]] = pairwise
+  
+}
+
+for (name in names(grp_season_df)) {
+  cat("\n", name, ":\n")
+  print(grp_season_df[[name]])
+}
+
+for (name in names(post_hoc_list)) {
+  cat("\n", name, ":\n")
+  print(post_hoc_list[[name]])
+}
+
+
+## Seasonal productivity
+
+season_ANPP = Productivity %>%
+  group_by(Shelter, Clipping, Precipitation, Treatment, Season_year, Season) %>%
+  summarise(ANPP = sum(ANPP), .groups = "drop")
+
+season_df = summarySE(season_ANPP, measurevar = "ANPP",
+                      groupvars = c("Treatment", "Season")) %>%
+  mutate(Treatment = factor(Treatment, levels = c("L-W", "H-W", "L-D", "H-D")),
+         Season = factor(Season, levels = c("Spring", "Summer", 
+                                                      "Autumn", "Winter")))
+df_wide_seas_summary = season_df %>%
+  dplyr::select(Season,Treatment, ANPP) %>%
+  pivot_wider(names_from = Treatment, values_from = ANPP) %>%
+  mutate(
+    drought_L   = ( `L-D` - `L-W` ) / `L-W` * 100,
+    drought_H   = ( `H-D` - `H-W` ) / `H-W` * 100,
+    clipping_W  = ( `H-W` - `L-W` ) / `L-W` * 100,
+    clipping_D  = ( `H-D` - `L-D` ) / `L-D` * 100,
+    Drought_effect = ((`L-D`+`H-D`)/2-(`L-W`+`H-W`)/2)/((`L-W`+`H-W`)/2)*100,
+    Clipping_effect = ((`H-W`+`H-D`)/2-(`L-W`+`L-D`)/2)/((`L-W`+`L-D`)/2)*100,
+    Expected_HD = clipping_W + drought_L,
+    Observed_HD = ( `H-D` - `L-W` ) / `L-W` * 100,
+    Direction =Observed_HD - Expected_HD)
+print(df_wide_seas_summary)
+
+ANPP_control = season_df %>%
+  filter(Treatment == "L-W") %>%
+   dplyr::select(ANPP) %>%
+  pull()
+# Step 2: Calculate deviation from control
+
+season_df = season_df %>%
+  mutate(`Effect size` = (ANPP - ANPP_control)*100/ANPP_control)
+
+df_summary_season = season_df %>%
+  mutate(ANPP_SE = paste0(round(ANPP, 2), " ± ", round(se, 2)))
+df_wide_season = df_summary_season %>%
+  dplyr::select(Season,Treatment, ANPP_SE) %>%
+  pivot_wider(names_from = Treatment, values_from = ANPP_SE)
+pander(df_wide_season, caption = 'Seasonal productivity over 21 months')
+
+seaon_anpp_plot = ggplot(season_df, aes(x = Season, y = ANPP, 
+                                     color = Treatment, fill = Treatment)) +
+  geom_point(size = 9, position = position_dodge(width = 0.9)) +
+  geom_errorbar(aes(ymax = ANPP + se, ymin = ANPP - se),
+                position = position_dodge(width = 0.9),
+                linewidth = 1.4, width = 0.2)  +
+  theme_classic() +
+  scale_color_manual(values = treatment_colors) +
+  scale_fill_manual(values = treatment_colors) +
+  theme(panel.border = element_rect(colour = "black", fill = NA, 
+                                    linewidth = 0.7),
+        legend.title = element_blank(), 
+        legend.text = element_text(size=13),
+        axis.text = element_text(size = 21),
+        legend.box.background = element_rect(colour = "black", 
+                                             fill = NA, linewidth = 0.5),
+        legend.key.size = unit(0.05, "cm"),
+        legend.spacing.y = unit(0.01, "cm"),
+        legend.margin = margin(1, 1, 1, 1),
+        legend.position = c(0.892, 0.828),
+        axis.title = element_text(size = 22), 
+        axis.title.x = element_blank(),
+        axis.text.x = element_text(size = 21),
+        axis.text.y = element_text(size = 21)) +
+  labs(y = expression(ANPP~(t~ha^-1))) +
+  geom_vline(xintercept = c(1.5, 2.5, 3.5), color = "black", 
+             linetype = "dashed", alpha = 0.8)
+
+print(seaon_anpp_plot)
+ggsave(filename = paste0("Manuscript/Figures/ANPP_season.tiff"), plot = seaon_anpp_plot, 
+         dpi = 150, width = 1200,height = 700, units = "px")
+
+
+# Plotting within season effects considering years 
+
+season_df = Biomass %>% filter(!Group %in% c("Weed", "Dead")) %>%
+  group_by(Shelter, Clipping, Precipitation, Treatment, 
+           Season_year, Season, Year_round) %>%
+  summarise(ANPP = sum(DM_sqm, na.rm = T)*0.01, .groups = "drop")
+
+season_df_sum = summarySE(season_df, measurevar = "ANPP",
+                      groupvars = c("Treatment", "Season_year")) %>%
+  mutate(Treatment = factor(Treatment, levels = c("L-W", "H-W", "L-D", "H-D")),
+         Season_year = factor(Season_year, 
+                         levels = c("Winter 2023", "Spring 2023", "Summer 2024",
+                                    "Autumn 2024", "Winter 2024", "Spring 2024", 
+                                    "Summer 2025")))
+df_wide_all_seas_sum = season_df_sum %>%
+  dplyr::select(Season_year,Treatment, ANPP) %>%
+  pivot_wider(names_from = Treatment, values_from = ANPP) %>%
+  mutate(
+    drought_L   = ( `L-D` - `L-W` ) / `L-W` * 100,
+    drought_H   = ( `H-D` - `H-W` ) / `H-W` * 100,
+    clipping_W  = ( `H-W` - `L-W` ) / `L-W` * 100,
+    clipping_D  = ( `H-D` - `L-D` ) / `L-D` * 100,
+    interaction = ( `H-D` - `L-W` ) / `L-W` * 100,
+    Drought_effect = ((`L-D`+`H-D`)/2-(`L-W`+`H-W`)/2)/((`L-W`+`H-W`)/2)*100,
+    Clipping_effect = ((`H-W`+`H-D`)/2-(`L-W`+`L-D`)/2)/((`L-W`+`L-D`)/2)*100)
+print(df_wide_seas_summary)
+
+ANPP_control_s = season_df_sum %>%
+  filter(Treatment == "L-W") %>%
+   dplyr::select(ANPP) %>%
+  pull()
+# Step 2: Calculate deviation from control
+
+season_df_sum = season_df_sum %>%
+  mutate(`Effect size` = (ANPP - ANPP_control_s)*100/ANPP_control_s)
+
+seaon_anpp_all = ggplot(season_df_sum, aes(x = Season_year, y = ANPP, 
+                                     color = Treatment, fill = Treatment)) +
+  geom_point(size = 9, position = position_dodge(width = 0.9)) +
+  geom_errorbar(aes(ymax = ANPP + se, ymin = ANPP - se),
+                position = position_dodge(width = 0.9),
+                linewidth = 1.4, width = 0.2)  +
+  theme_classic() +
+  scale_color_manual(values = treatment_colors) +
+  scale_fill_manual(values = treatment_colors) +
+  theme(panel.border = element_rect(colour = "black", fill = NA, 
+                                    linewidth = 0.7),
+        legend.title = element_blank(), legend.text = element_text(size = 16),
+        legend.position = "none",
+        axis.title = element_text(size = 20), 
+        axis.title.x = element_blank(),
+        axis.text.x = element_text(size = 17),
+        axis.text.y = element_text(size = 17)) +
+  labs(y = expression(ANPP~(t~ha^-1))) +
+  geom_vline(xintercept = c(1.5, 2.5, 3.5,4.5,5.5, 6.5), color = "black", 
+             linetype = "dashed", alpha = 0.8)
+
+
+print(seaon_anpp_all)
+ggsave(filename = paste0("Manuscript/Figures/ANPP_season_detail.tiff"), plot = seaon_anpp_all, 
+         dpi = 150, width = 1800,height = 700, units = "px")
+
+#------------------------------------------------------------------------------
+        # ANPP response ratio vs water availability
+#------------------------------------------------------------------------------
+
+SWC = read_excel("D:/PhD_Project/Data/VWC_temperate.xlsx") 
+
+SWC = SWC %>%
+  arrange(Date) %>%
+  mutate(Rainfall_lag3 = lead(Rainfall, 3))
+
+plot = ggplot(SWC %>% filter(Rainfall_lag3 > 0),
+              aes(Rainfall_lag3, SWC)) +
+  geom_point(size = 3, alpha = 0.7) +
+  geom_smooth(method = "lm", color = "black", fill = "grey70") +
+  stat_poly_eq(
+    aes(label = paste(after_stat(eq.label), after_stat(rr.label), sep = "~~~")),
+    formula = y ~ x,
+    parse = TRUE,
+    output.type = "expression") +
+  theme_classic(base_size = 14) +
+  labs(x = "Rainfall 3 days earlier", y = "Soil water content")
+
+
+SWC = SWC %>%
+  mutate(Year_round = case_when(Date >= as.Date("2023-06-01") & 
+                                  Date <= as.Date("2024-05-31") ~ "1",
+      TRUE ~ "2"),
+      Season = case_when(month(Date) %in% c(6,7,8) ~ "Winter",
+                         month(Date) %in% c(9,10,11) ~ "Spring",
+                         month(Date) %in% c(12,1,2) ~ "Summer",
+                         month(Date) %in% c(3,4,5) ~ "Autumn"))
+
+
+Water_season = SWC %>%
+  group_by(Season, Shelter,  Clipping, Precipitation, Treatment, Year_round) %>%
+  summarise(SWC = mean(SWC, na.rm = TRUE),
+            Rainfall = sum(Rainfall, na.rm = TRUE),
+            .groups = "drop") %>%
+  mutate(Year_round = case_when(Year_round == 1 ~ "Year 1",
+                                Year_round == 2 ~ "Year 2"),
+         Treatment = factor(Treatment, levels = c("L-W", "H-W", "L-D", "H-D")),
+         Season = factor(Season, levels = c("Spring", "Summer", "Autumn", "Winter")))
+
+water_seas_summary = summarySE(Water_season, "SWC", 
+                               c("Season", "Treatment", "Year_round"))
+SWC_summary = water_seas_summary %>%
+  select(Treatment, SWC, Season, Year_round) %>%
+  pivot_wider(names_from = Treatment, values_from = SWC) %>%
+  mutate(
+    drought_L   = ( `L-D` - `L-W` ) / `L-W` * 100,
+    drought_H   = ( `H-D` - `H-W` ) / `H-W` * 100,
+    clipping_W  = ( `H-W` - `L-W` ) / `L-W` * 100,
+    clipping_D  = ( `H-D` - `L-D` ) / `L-D` * 100,
+    Drought_effect = ((`L-D`+`H-D`)/2-(`L-W`+`H-W`)/2)/((`L-W`+`H-W`)/2)*100,
+    Clipping_effect = ((`H-W`+`H-D`)/2-(`L-W`+`L-D`)/2)/((`L-W`+`L-D`)/2)*100,
+    Expected_HD = clipping_W + drought_L,
+    Observed_HD = ( `H-D` - `L-W` ) / `L-W` * 100,
+    Direction =Observed_HD - Expected_HD)
+
+                #----------------------------------------#
+                      # Consider year-round#
+                #----------------------------------------#
+
+water_year_summary = summarySE(SWC, "SWC", 
+                               c("Year_round", "Season", "Treatment")) %>%
+  mutate(Year_round = case_when(Year_round == 1 ~ "Year 1",
+                                Year_round == 2 ~ "Year 2"),
+         Treatment = factor(Treatment, levels = c("L-W", "H-W", "L-D", "H-D")),
+         Season = factor(Season, levels = c("Spring", "Summer", "Autumn", "Winter")))
+
+SWC_summary_year = water_year_summary %>%
+  select(Treatment, SWC, Season, Year_round) %>%
+  pivot_wider(names_from = Treatment, values_from = SWC) %>%
+  mutate(
+    drought_L   = ( `L-D` - `L-W` ) / `L-W` * 100,
+    drought_H   = ( `H-D` - `H-W` ) / `H-W` * 100,
+    clipping_W  = ( `H-W` - `L-W` ) / `L-W` * 100,
+    clipping_D  = ( `H-D` - `L-D` ) / `L-D` * 100,
+    Drought_effect = ((`L-D`+`H-D`)/2-(`L-W`+`H-W`)/2)/((`L-W`+`H-W`)/2)*100,
+    Clipping_effect = ((`H-W`+`H-D`)/2-(`L-W`+`L-D`)/2)/((`L-W`+`L-D`)/2)*100,
+    Expected_HD = clipping_W + drought_L,
+    Observed_HD = ( `H-D` - `L-W` ) / `L-W` * 100,
+    Direction =Observed_HD - Expected_HD)
+
+plot2 = ggplot(Water_season, 
+               aes(Season, SWC, fill = Treatment)) +
+  geom_boxplot(position = "dodge") +
+  theme_classic(base_size = 14) +
+  scale_color_manual(values = treatment_colors) +
+  labs(y = expression(Soil~ volumetric~ water ~ content~(m^3 ~ m^-3))) +
+  scale_fill_manual(values = treatment_colors) +
+   theme(panel.border = element_rect(colour = "black", fill = NA, linewidth = 0.7),
+        legend.title = element_blank(),
+        legend.text = element_text(size = 13),
+        strip.text = element_text(size = 21),
+        axis.text = element_text(size = 21),
+        legend.box.background = element_rect(colour = "black", 
+                                             fill = NA, linewidth = 0.5),
+        legend.margin = margin(1, 1, 1, 1),
+        legend.position = c(0.89, 0.88),
+        axis.title = element_text(size = 22))
+print(plot2)
+
+# test differences in water availability across seasons
+model = lmer(
+  SWC ~ Season * Precipitation * Clipping +
+    (1 | Shelter),
+  data = Water_season)
+plot(simulateResiduals(model))
+Anova(model, test = "F")
+
+emm = emmeans(model, ~ Clipping | Precipitation)
+pairs(emm)
+pairs(emm, adjust = "tukey")
+cld(emm, Letters = letters)
+
+# Let do summer season within separated years
+
+SWC_summer = Water_season %>%
+  filter(Season == "Summer")
+
+year_swc_list = list()
+pair_year = list()
+
+for(y in unique(SWC_summer$Year_round)){
+  data = subset(SWC_summer, Year_round == y)
+  model = lmer(SWC ~ Clipping * Precipitation + (1|Shelter), data = data)
+ 
+  # Check singularity
+  if (isSingular(model)) {
+    message(paste("Year", y, ": singular -> using lm"))
+    model = lm(SWC ~ Clipping * Precipitation, data = data)
+    Aov = Anova(model, type = 2)
+    emm = emmeans(model, ~ Clipping | Precipitation)
+    
+  } else {
+    message(paste("Year", y, ": using lmer"))
+    print(VarCorr(model))
+    plot(simulateResiduals(model))
+    Aov = Anova(model, test = "F")
+    emm = emmeans(model, ~ Clipping | Precipitation)
+  }
+  
+  plot(simulateResiduals(model))
+  Aov = Anova(model, test = "F")
+  
+  emm = emmeans(model, ~ Clipping | Precipitation)
+  pair = pairs(emm, adjust = "none")
+  pair_year[[y]] = pair
+  year_swc_list[[y]] = Aov
+}
+
+for(nam in names(year_swc_list)){
+  print(year_swc_list[[nam]])
+}
+
+for(name in names(pair_year)){
+  print(pair_year[[name]])
+}
+
+#-----------------------------------------------------------------------------
+                                  #Productivity
+#-----------------------------------------------------------------------------
+
+season_ANPP = Productivity %>%
+  group_by(Shelter, Clipping, Precipitation, Treatment, Season_year, Season) %>%
+  summarise(ANPP = sum(ANPP), .groups = "drop")
+
+season_df = summarySE(season_ANPP, measurevar = "ANPP",
+                      groupvars = c("Precipitation", "Season", 
+                                    "Clipping", "Shelter"))
+Water_ANPP = merge(season_df, Water_season,
+                   by = c("Season", "Shelter",  "Clipping", "Precipitation")) %>%
+  rename(`Grazing frequency` = Clipping) 
+
+Water_ANPP_df  = Water_ANPP %>%
+  group_by(`Grazing frequency`, Precipitation, Treatment, Shelter, Season) %>%
+  summarise(SWC = mean(SWC, na.rm = T),
+            ANPP = sum(ANPP), .groups = "drop") %>%
+  mutate(`Grazing frequency` = factor(`Grazing frequency`, 
+                                      levels = c("Low", "High")),
+         `Grazing frequency` = as.factor(`Grazing frequency`))
+
+formula_poly = y ~ poly(x, 2, raw = TRUE)
+overall = ggplot(Water_ANPP_df,
+                 aes(SWC, ANPP,
+                     color = `Grazing frequency`,
+                     fill = `Grazing frequency`)) +
+  geom_point(size = 3) +
+  geom_smooth(method = "lm", se = TRUE, alpha = 0.15) +
+  stat_poly_eq(
+    aes(label = paste(after_stat(eq.label),
+                      after_stat(rr.label),
+                      after_stat(p.value.label),
+                      sep = "~~~")),
+    formula = y ~ x,
+    parse = TRUE,
+    size = 5) +
+  scale_color_manual(values = c("Low" = "#90CAF9", "High" = "#CC5500")) +
+  scale_fill_manual(values = c("Low" = "#90CAF9", "High" = "#CC5500")) +
+  theme_classic(base_size = 14) +
+  theme(panel.border = element_rect(colour = "black", fill = NA, linewidth = 0.7),
+        legend.title = element_text(size = 14),
+        legend.text = element_text(size = 13),
+        axis.text = element_text(size = 21),
+        legend.box.background = element_rect(colour = "black", fill = NA, linewidth = 0.5),
+        legend.margin = margin(1, 1, 1, 1),
+        legend.position = c(0.8, 0.82),
+        axis.title = element_text(size = 22)) +
+  labs(x = expression(Soil~ VWC ~ (m^3~m^-3)),
+       y = expression(ANPP ~ (t~ha^-1)))
+print(overall)
+
+ggsave(overall, filename = "Manuscript/Figures/SWC_ANPP.tiff", width = 1400, height = 1000, 
+       units = "px", dpi = 150)
+
+Water_avail_plot = (plot2 | overall) +
+  plot_annotation(tag_levels = 'a', tag_prefix = '(', tag_suffix = ')')
+print(Water_avail_plot)
+ggsave(Water_avail_plot, filename = "Manuscript/Figures/SWC_ANPP_summary.tiff",
+       width = 2300, height = 1100, units = "px", dpi = 150)
+
+model = lmer(ANPP ~ SWC * `Grazing frequency` + (1|Shelter),
+  data = Water_ANPP)
+Anova(model, test = "F")
+emtrends(model, pairwise ~ `Grazing frequency`, var = "SWC")
