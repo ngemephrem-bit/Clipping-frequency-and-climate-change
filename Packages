@@ -1,0 +1,42 @@
+library(readxl)
+library(tidyverse)
+library(ggplot2)
+library(reshape2)
+library(Matrix)
+library(Hmisc)
+library(lme4)
+library(lmerTest)
+library(emmeans)
+library(Rmisc)
+library(MASS)
+library(car)
+library(openxlsx)
+library(factoextra)
+library(vegan)
+library(ggpmisc)
+library(plotly)
+library(gridExtra)
+library(scales)
+library(multcomp)
+library(patchwork)
+library(multcompView)
+library(corrplot)
+library(glmmTMB)
+library(pander)
+library(zoo)
+library(DHARMa)
+
+treatment_colors = c("L-W" = "#0D47A1",
+                     "L-D" = "#E69F00",
+                     "H-W" = "#90CAF9",
+                     "H-D" = "#CC5500")
+
+p_output = function(formula, title){
+  library(pander)
+  data = as.data.frame(formula)
+  data$Significance = symnum(data$`Pr(>F)`,
+                         corr = FALSE, na = FALSE,
+                         cutpoints = c(0, 0.001, 0.01, 0.05, 0.1, 1),
+                         symbols = c("***", "**", "*", ".", " "))
+  pander(data, caption = title)
+}
